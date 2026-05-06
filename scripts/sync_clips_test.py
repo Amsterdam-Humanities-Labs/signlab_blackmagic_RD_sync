@@ -64,6 +64,52 @@ def test_is_allowed_clip(name, allowed):
     assert sc.is_allowed_clip(name) is allowed
 
 
+# --- project config -------------------------------------------------------
+
+
+def test_load_pyproject_tool_config_reads_staging_dir(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.bmcam-sync]\nstaging-dir = 'E:/BlackmagicTemp'\n",
+        encoding="utf-8",
+    )
+
+    config = sc._load_pyproject_tool_config(pyproject)
+
+    assert config["staging-dir"] == "E:/BlackmagicTemp"
+
+
+def test_build_config_uses_pyproject_staging_dir(monkeypatch, tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.bmcam-sync]\nstaging-dir = 'E:/BlackmagicTemp'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sc, "PYPROJECT_PATH", pyproject)
+    monkeypatch.setenv("SIGNCOLLECT_ROOT", str(tmp_path / "drive"))
+    monkeypatch.delenv("STAGING_DIR", raising=False)
+
+    cfg = sc._build_config(["--once"])
+
+    assert cfg.staging_dir == Path("E:/BlackmagicTemp")
+
+
+def test_build_config_env_overrides_pyproject_staging_dir(monkeypatch, tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.bmcam-sync]\nstaging-dir = 'E:/BlackmagicTemp'\n",
+        encoding="utf-8",
+    )
+    env_staging = tmp_path / "env-staging"
+    monkeypatch.setattr(sc, "PYPROJECT_PATH", pyproject)
+    monkeypatch.setenv("SIGNCOLLECT_ROOT", str(tmp_path / "drive"))
+    monkeypatch.setenv("STAGING_DIR", str(env_staging))
+
+    cfg = sc._build_config(["--once"])
+
+    assert cfg.staging_dir == env_staging
+
+
 # --- download idempotency -------------------------------------------------
 
 

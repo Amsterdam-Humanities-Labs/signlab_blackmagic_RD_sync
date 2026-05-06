@@ -39,6 +39,14 @@ from urllib.parse import quote
 
 import requests
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 only
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:  # pragma: no cover
+        tomllib = None  # type: ignore[assignment]
+
 log = logging.getLogger("bmcam_sync")
 
 _DATE_RE_LEGACY = re.compile(
@@ -58,6 +66,7 @@ DEST_SUBPATH = ("AIHR-FGW-TEST-SIGNLAB (Projectfolder)", "blackmagic_files")
 OUTPUT_EXT = ".mp4"
 DEFAULT_BITRATE = "50M"
 SHUTDOWN = False
+PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 
 def _install_signal_handlers() -> None:
@@ -68,6 +77,43 @@ def _install_signal_handlers() -> None:
 
     signal.signal(signal.SIGINT, _handle)
     signal.signal(signal.SIGTERM, _handle)
+
+
+def _load_pyproject_tool_config(
+    pyproject_path: Path | None = None,
+) -> dict[str, object]:
+    if pyproject_path is None:
+        pyproject_path = PYPROJECT_PATH
+
+    if tomllib is None:
+        log.warning(
+            "could not read %s: install tomli or use Python 3.11+",
+            pyproject_path,
+        )
+        return {}
+    if not pyproject_path.exists():
+        return {}
+
+    try:
+        with pyproject_path.open("rb") as f:
+            data = tomllib.load(f)
+    except Exception as e:
+        log.warning("could not read %s: %s", pyproject_path, e)
+        return {}
+
+    tool_config = data.get("tool", {}).get("bmcam-sync", {})
+    if isinstance(tool_config, dict):
+        return tool_config
+    log.warning("[tool.bmcam-sync] in %s must be a TOML table", pyproject_path)
+    return {}
+
+
+def _tool_config_str(config: dict[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
 
 
 @dataclass
@@ -842,6 +888,13 @@ def _setup_logging(cfg: Config) -> None:
 
 
 def _build_config(argv: Sequence[str] | None = None) -> Config:
+    tool_config = _load_pyproject_tool_config()
+    default_staging_dir = (
+        os.environ.get("STAGING_DIR")
+        or _tool_config_str(tool_config, "staging-dir", "staging_dir")
+        or str(Path.home() / "bmcam_sync_staging")
+    )
+
     p = argparse.ArgumentParser(
         description="Periodic sync + H.265 transcode of Blackmagic clips to "
                     "the SignCollect research drive."
@@ -852,8 +905,7 @@ def _build_config(argv: Sequence[str] | None = None) -> Config:
                    default=os.environ.get("SIGNCOLLECT_ROOT"),
                    help="Research-drive mount root (required)")
     p.add_argument("--staging-dir",
-                   default=os.environ.get("STAGING_DIR")
-                   or str(Path.home() / "bmcam_sync_staging"))
+                   default=default_staging_dir)
     p.add_argument("--interval-seconds", type=int,
                    default=int(os.environ.get("SYNC_INTERVAL_SECONDS", str(12 * 3600))))
     p.add_argument("--log-file",
@@ -868,6 +920,8 @@ def _build_config(argv: Sequence[str] | None = None) -> Config:
     default_transcoder = (
         Path(__file__).resolve().parent.parent / "build" / "braw2hevc"
     )
+    if os.name == "nt":
+        default_transcoder = default_transcoder.with_suffix(".exe")
     p.add_argument("--transcoder",
                    default=os.environ.get("BRAW_TRANSCODER")
                    or str(default_transcoder),

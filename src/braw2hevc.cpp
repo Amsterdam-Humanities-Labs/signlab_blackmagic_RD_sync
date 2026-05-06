@@ -1,11 +1,17 @@
 // Transcode a Blackmagic RAW (.braw) clip to H.265 (.mp4) by piping decoded
 // RGBA frames into ffmpeg's hevc_videotoolbox encoder.
 //
-// The BRAW SDK is loaded at runtime from
-//   /Applications/Blackmagic RAW/Blackmagic RAW SDK/Mac/Libraries
+// The BRAW SDK is loaded at runtime from the platform SDK Libraries folder
 // via the dispatch shim shipped in the SDK Include/ folder.
 
+#ifdef _WIN32
+#include "BlackmagicRawAPIDispatch.h"
+#include <comdef.h>
+#include <windows.h>
+#else
 #include "BlackmagicRawAPI.h"
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 
 #include <cstdint>
 #include <cstdio>
@@ -15,8 +21,6 @@
 #include <mutex>
 #include <string>
 #include <vector>
-
-#include <CoreFoundation/CoreFoundation.h>
 
 static const BlackmagicRawResourceFormat s_resourceFormat =
     blackmagicRawResourceFormatRGBAU8;
@@ -75,10 +79,17 @@ public:
     void DecodeComplete(IBlackmagicRawJob*, HRESULT) override {}
     void TrimProgress(IBlackmagicRawJob*, float) override {}
     void TrimComplete(IBlackmagicRawJob*, HRESULT) override {}
+#ifdef _WIN32
+    void SidecarMetadataParseWarning(IBlackmagicRawClip*, BSTR,
+                                     uint32_t, BSTR) override {}
+    void SidecarMetadataParseError(IBlackmagicRawClip*, BSTR,
+                                   uint32_t, BSTR) override {}
+#else
     void SidecarMetadataParseWarning(IBlackmagicRawClip*, CFStringRef,
                                      uint32_t, CFStringRef) override {}
     void SidecarMetadataParseError(IBlackmagicRawClip*, CFStringRef,
                                    uint32_t, CFStringRef) override {}
+#endif
     void PreparePipelineComplete(void*, HRESULT) override {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) override {
@@ -87,6 +98,74 @@ public:
     ULONG STDMETHODCALLTYPE AddRef() override { return 0; }
     ULONG STDMETHODCALLTYPE Release() override { return 0; }
 };
+
+#ifdef _WIN32
+std::wstring widenUtf8(const std::string& in) {
+    UINT codePage = CP_UTF8;
+    int len = MultiByteToWideChar(CP_UTF8, 0, in.c_str(), -1, nullptr, 0);
+    if (len <= 0) {
+        codePage = CP_ACP;
+        len = MultiByteToWideChar(CP_ACP, 0, in.c_str(), -1, nullptr, 0);
+    }
+    std::wstring out(static_cast<size_t>(len - 1), L'\0');
+    MultiByteToWideChar(codePage, 0, in.c_str(), -1, out.data(), len);
+    return out;
+}
+
+BSTR makeBstr(const std::string& in) {
+    std::wstring wide = widenUtf8(in);
+    return SysAllocStringLen(wide.data(), static_cast<UINT>(wide.size()));
+}
+
+bool g_comInitialized = false;
+
+void cleanupPlatformString(BSTR value) {
+    SysFreeString(value);
+}
+
+IBlackmagicRawFactory* createFactory() {
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (hr == S_OK || hr == S_FALSE) {
+        g_comInitialized = true;
+    } else if (hr != RPC_E_CHANGED_MODE) {
+        std::fprintf(stderr, "CoInitializeEx failed (hr=0x%x)\n", hr);
+        return nullptr;
+    }
+
+    BSTR libraryPath = SysAllocString(
+        L"C:\\Program Files (x86)\\Blackmagic Design\\Blackmagic RAW\\"
+        L"Blackmagic RAW SDK\\Win\\Libraries");
+    IBlackmagicRawFactory* factory =
+        CreateBlackmagicRawFactoryInstanceFromPath(libraryPath);
+    SysFreeString(libraryPath);
+    return factory;
+}
+
+void cleanupPlatform() {
+    if (g_comInitialized)
+        CoUninitialize();
+}
+
+#define POPEN _popen
+#define PCLOSE _pclose
+#define POPEN_MODE "wb"
+#else
+void cleanupPlatformString(CFStringRef value) {
+    CFRelease(value);
+}
+
+IBlackmagicRawFactory* createFactory() {
+    CFStringRef cfFrameworkPath = CFSTR(
+        "/Applications/Blackmagic RAW/Blackmagic RAW SDK/Mac/Libraries");
+    return CreateBlackmagicRawFactoryInstanceFromPath(cfFrameworkPath);
+}
+
+void cleanupPlatform() {}
+
+#define POPEN popen
+#define PCLOSE pclose
+#define POPEN_MODE "w"
+#endif
 
 void shellEscape(const std::string& in, std::string& out) {
     out.clear();
@@ -112,16 +191,19 @@ int main(int argc, const char* argv[]) {
     const std::string outputPath = argv[2];
     const std::string bitrate = (argc >= 4) ? argv[3] : "50M";
 
+#ifdef _WIN32
+    BSTR clipPath = makeBstr(inputPath);
+#else
     CFStringRef cfInput = CFStringCreateWithCString(
         nullptr, inputPath.c_str(), kCFStringEncodingUTF8);
-    CFStringRef cfFrameworkPath = CFSTR(
-        "/Applications/Blackmagic RAW/Blackmagic RAW SDK/Mac/Libraries");
+#define clipPath cfInput
+#endif
 
-    IBlackmagicRawFactory* factory =
-        CreateBlackmagicRawFactoryInstanceFromPath(cfFrameworkPath);
+    IBlackmagicRawFactory* factory = createFactory();
     if (factory == nullptr) {
         std::fprintf(stderr, "failed to load BRAW SDK framework\n");
-        CFRelease(cfInput);
+        cleanupPlatformString(clipPath);
+        cleanupPlatform();
         return 3;
     }
 
@@ -130,18 +212,20 @@ int main(int argc, const char* argv[]) {
     if (hr != S_OK) {
         std::fprintf(stderr, "CreateCodec failed (hr=0x%x)\n", hr);
         factory->Release();
-        CFRelease(cfInput);
+        cleanupPlatformString(clipPath);
+        cleanupPlatform();
         return 4;
     }
 
     IBlackmagicRawClip* clip = nullptr;
-    hr = codec->OpenClip(cfInput, &clip);
+    hr = codec->OpenClip(clipPath, &clip);
     if (hr != S_OK) {
         std::fprintf(stderr, "OpenClip failed for %s (hr=0x%x)\n",
                      inputPath.c_str(), hr);
         codec->Release();
         factory->Release();
-        CFRelease(cfInput);
+        cleanupPlatformString(clipPath);
+        cleanupPlatform();
         return 5;
     }
 
@@ -167,7 +251,8 @@ int main(int argc, const char* argv[]) {
         clip->Release();
         codec->Release();
         factory->Release();
-        CFRelease(cfInput);
+        cleanupPlatformString(clipPath);
+        cleanupPlatform();
         return 6;
     }
 
@@ -177,18 +262,23 @@ int main(int argc, const char* argv[]) {
     std::snprintf(ffmpegCmd, sizeof(ffmpegCmd),
                   "ffmpeg -hide_banner -loglevel error -y "
                   "-f rawvideo -pix_fmt rgba -s %ux%u -r %.6f -i pipe:0 "
+#ifdef _WIN32
+                  "-c:v libx265 -preset medium -tag:v hvc1 -b:v %s "
+#else
                   "-c:v hevc_videotoolbox -tag:v hvc1 -b:v %s "
+#endif
                   "-movflags +faststart -an %s",
                   width, height, fps, bitrate.c_str(), quotedOut.c_str());
     std::fprintf(stderr, "ffmpeg: %s\n", ffmpegCmd);
 
-    FILE* ffmpeg = popen(ffmpegCmd, "w");
+    FILE* ffmpeg = POPEN(ffmpegCmd, POPEN_MODE);
     if (!ffmpeg) {
         std::fprintf(stderr, "popen ffmpeg failed\n");
         clip->Release();
         codec->Release();
         factory->Release();
-        CFRelease(cfInput);
+        cleanupPlatformString(clipPath);
+        cleanupPlatform();
         return 7;
     }
 
@@ -241,13 +331,14 @@ int main(int argc, const char* argv[]) {
     }
     std::fprintf(stderr, "\n");
 
-    int ffmpegRc = pclose(ffmpeg);
+    int ffmpegRc = PCLOSE(ffmpeg);
     codec->FlushJobs();
 
     clip->Release();
     codec->Release();
     factory->Release();
-    CFRelease(cfInput);
+    cleanupPlatformString(clipPath);
+    cleanupPlatform();
 
     if (!ok) return 8;
     if (ffmpegRc != 0) {

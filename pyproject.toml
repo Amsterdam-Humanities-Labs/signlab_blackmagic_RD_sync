@@ -7,7 +7,7 @@ name = "bm-downloader"
 version = "0.1.0"
 description = "Periodic sync of Blackmagic camera clips to the SignCollect research drive"
 requires-python = ">=3.10"
-dependencies = ["requests>=2.31"]
+dependencies = ["requests>=2.31", "tomli>=2; python_version < '3.11'"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
@@ -17,6 +17,9 @@ bmcam-sync = "scripts.sync_clips:main"
 
 [tool.setuptools]
 packages = ["scripts"]
+
+[tool.bmcam-sync]
+staging-dir = 'E:\BlackmagicTemp'
 
 [tool.pytest.ini_options]
 testpaths = ["scripts"]

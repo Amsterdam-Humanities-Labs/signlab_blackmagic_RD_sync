@@ -135,7 +135,7 @@ RCLONE_REMOTE=signcollect: \
 | `--bmcam-url` / `BMCAM_URL` | `http://localhost:8000` | bmcam server base URL. |
 | `--api-key` / `BMCAM_API_KEY` | unset | Sent as `X-API-Key` header if set. |
 | `--signcollect-root` / `SIGNCOLLECT_ROOT` | required | Mount root of the research drive. |
-| `--staging-dir` / `STAGING_DIR` | `~/bmcam_sync_staging` | Local cache. |
+| `--staging-dir` / `STAGING_DIR` / `[tool.bmcam-sync].staging-dir` | `~/bmcam_sync_staging` | Local cache. |
 | `--rclone-remote` / `RCLONE_REMOTE` | unset | rclone remote prefix matching `SIGNCOLLECT_ROOT` (e.g. `signcollect:`). When set, the script checks upstream durability via `rclone size` before deleting from the camera. |
 | `--bitrate` / `TRANSCODE_BITRATE` | `50M` | HEVC target bitrate. |
 | `--interval-seconds` / `SYNC_INTERVAL_SECONDS` | `43200` (12 h) | Loop interval in daemon mode. |
