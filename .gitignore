@@ -9,3 +9,5 @@ dist/
 bmcam_sync_staging/
 *.log
 .tmp.*
+
+.vscode
