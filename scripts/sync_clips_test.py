@@ -432,7 +432,8 @@ def test_upload_clip_dry_run_no_subprocess(tmp_path):
     assert run.call_count == 0
 
 
-def test_upload_clip_invokes_rsync(tmp_path):
+def test_upload_clip_invokes_rsync(monkeypatch, tmp_path):
+    monkeypatch.setattr(sc.os, "name", "posix")
     local = tmp_path / "x.mp4"; local.write_bytes(b"a")
     remote = tmp_path / "out" / "x.mp4"
     with mock.patch("scripts.sync_clips.subprocess.run") as run:
@@ -442,3 +443,16 @@ def test_upload_clip_invokes_rsync(tmp_path):
     assert cmd[0] == "rsync"
     assert cmd[-2] == str(local)
     assert cmd[-1] == str(remote)
+
+
+def test_upload_clip_copies_locally_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(sc.os, "name", "nt")
+    local = tmp_path / "x.mp4"; local.write_bytes(b"a")
+    remote = tmp_path / "out" / "x.mp4"
+
+    with mock.patch("scripts.sync_clips.subprocess.run") as run:
+        assert sc.upload_clip(local, remote, dry_run=False) is True
+
+    assert run.call_count == 0
+    assert remote.read_bytes() == b"a"
+    assert not (remote.parent / f".tmp.{remote.name}").exists()

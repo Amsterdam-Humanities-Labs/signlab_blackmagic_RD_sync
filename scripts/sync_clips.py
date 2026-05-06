@@ -417,12 +417,27 @@ def _ffprobe_ok(path: Path) -> bool:
 
 
 def upload_clip(local_mp4: Path, remote_mp4: Path, dry_run: bool) -> bool:
-    """rsync local mp4 to remote mp4. Returns True if rsync ran and matched."""
+    """Copy local clip to remote path. Returns True if the copy completed."""
     if dry_run:
-        log.info("DRY-RUN would rsync %s -> %s", local_mp4, remote_mp4)
+        log.info("DRY-RUN would upload %s -> %s", local_mp4, remote_mp4)
         return True
 
     remote_mp4.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        tmp = remote_mp4.parent / f".tmp.{remote_mp4.name}"
+        try:
+            shutil.copy2(local_mp4, tmp)
+            os.replace(tmp, remote_mp4)
+            return True
+        except OSError as e:
+            log.error("copy failed for %s -> %s: %s", local_mp4, remote_mp4, e)
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            return False
+
     cmd = [
         "rsync", "-t",
         "--partial",
@@ -793,7 +808,10 @@ def preflight(cfg: Config, client: BmcamClient) -> bool:
         )
         return False
 
-    for tool in ("rsync", "ffprobe", "ffmpeg"):
+    required_tools = ["ffprobe", "ffmpeg"]
+    if os.name != "nt":
+        required_tools.append("rsync")
+    for tool in required_tools:
         if shutil.which(tool) is None:
             log.error("%s not found on PATH", tool)
             return False
