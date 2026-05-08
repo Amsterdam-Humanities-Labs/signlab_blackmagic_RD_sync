@@ -10,11 +10,17 @@ if [[ ! -d "$SDK" ]]; then
 fi
 
 mkdir -p build
-clang++ -std=c++17 -O2 \
-    -I"$SDK/Include" \
-    "$SDK/Include/BlackmagicRawAPIDispatch.cpp" \
-    src/braw2hevc.cpp \
-    -framework CoreFoundation \
-    -o build/braw2hevc
 
-echo "built: build/braw2hevc"
+build_one() {
+    local src=$1 out=$2
+    clang++ -std=c++17 -O2 \
+        -I"$SDK/Include" \
+        "$SDK/Include/BlackmagicRawAPIDispatch.cpp" \
+        "$src" \
+        -framework CoreFoundation \
+        -o "$out"
+    echo "built: $out"
+}
+
+build_one src/braw2hevc.cpp build/braw2hevc
+build_one src/braw_probe.cpp build/braw_probe

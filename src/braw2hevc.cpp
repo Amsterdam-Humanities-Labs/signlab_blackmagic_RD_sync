@@ -178,6 +178,52 @@ void shellEscape(const std::string& in, std::string& out) {
     out.push_back('"');
 }
 
+#ifdef _WIN32
+std::string platformStringToStd(BSTR s) {
+    if (s == nullptr) return {};
+    UINT len = SysStringLen(s);
+    int needed = WideCharToMultiByte(CP_UTF8, 0, s, len, nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s, len, out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
+void releasePlatformTimecode(BSTR s) {
+    if (s != nullptr) SysFreeString(s);
+}
+#else
+std::string platformStringToStd(CFStringRef s) {
+    if (s == nullptr) return {};
+    CFIndex len = CFStringGetLength(s);
+    CFIndex maxBytes =
+        CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+    std::string out(maxBytes, '\0');
+    if (!CFStringGetCString(s, out.data(), maxBytes, kCFStringEncodingUTF8)) {
+        return {};
+    }
+    out.resize(std::char_traits<char>::length(out.c_str()));
+    return out;
+}
+
+void releasePlatformTimecode(CFStringRef s) {
+    if (s != nullptr) CFRelease(s);
+}
+#endif
+
+bool isValidTimecode(const std::string& tc) {
+    // Accept HH:MM:SS:FF or HH:MM:SS;FF (drop-frame). Anything else is
+    // rejected so we don't pass garbage to ffmpeg.
+    if (tc.size() != 11) return false;
+    for (size_t i = 0; i < tc.size(); ++i) {
+        if (i == 2 || i == 5 || i == 8) {
+            if (tc[i] != ':' && tc[i] != ';') return false;
+        } else {
+            if (tc[i] < '0' || tc[i] > '9') return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, const char* argv[]) {
@@ -237,10 +283,22 @@ int main(int argc, const char* argv[]) {
     clip->GetFrameRate(&fps);
     clip->GetFrameCount(&frameCount);
 
+    std::string startTimecode;
+#ifdef _WIN32
+    BSTR tcRef = nullptr;
+#else
+    CFStringRef tcRef = nullptr;
+#endif
+    if (clip->GetTimecodeForFrame(0, &tcRef) == S_OK && tcRef != nullptr) {
+        startTimecode = platformStringToStd(tcRef);
+        releasePlatformTimecode(tcRef);
+    }
+
     std::fprintf(stderr,
-                 "clip %s: %ux%u @ %.3f fps, %llu frames\n",
+                 "clip %s: %ux%u @ %.3f fps, %llu frames, tc=%s\n",
                  inputPath.c_str(), width, height, fps,
-                 (unsigned long long)frameCount);
+                 (unsigned long long)frameCount,
+                 startTimecode.empty() ? "<none>" : startTimecode.c_str());
 
     FrameSlot slot;
     SyncCallback cb;
@@ -258,17 +316,28 @@ int main(int argc, const char* argv[]) {
 
     std::string quotedOut;
     shellEscape(outputPath, quotedOut);
+    std::string tcArg;
+    if (!startTimecode.empty() && isValidTimecode(startTimecode)) {
+        std::string quotedTc;
+        shellEscape(startTimecode, quotedTc);
+        tcArg = " -timecode " + quotedTc;
+    } else if (!startTimecode.empty()) {
+        std::fprintf(stderr,
+                     "warning: ignoring unparseable timecode %s\n",
+                     startTimecode.c_str());
+    }
     char ffmpegCmd[2048];
     std::snprintf(ffmpegCmd, sizeof(ffmpegCmd),
                   "ffmpeg -hide_banner -loglevel error -y "
                   "-f rawvideo -pix_fmt rgba -s %ux%u -r %.6f -i pipe:0 "
 #ifdef _WIN32
-                  "-c:v libx265 -preset medium -tag:v hvc1 -b:v %s "
+                  "-c:v libx265 -preset medium -tag:v hvc1 -b:v %s%s "
 #else
-                  "-c:v hevc_videotoolbox -tag:v hvc1 -b:v %s "
+                  "-c:v hevc_videotoolbox -tag:v hvc1 -b:v %s%s "
 #endif
                   "-movflags +faststart -an %s",
-                  width, height, fps, bitrate.c_str(), quotedOut.c_str());
+                  width, height, fps, bitrate.c_str(),
+                  tcArg.c_str(), quotedOut.c_str());
     std::fprintf(stderr, "ffmpeg: %s\n", ffmpegCmd);
 
     FILE* ffmpeg = POPEN(ffmpegCmd, POPEN_MODE);

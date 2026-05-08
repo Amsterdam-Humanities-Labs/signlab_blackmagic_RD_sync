@@ -12,7 +12,9 @@ For every `.braw` clip on the camera's USB disk, on each cycle:
    a local staging directory.
 2. **Transcode** `.braw` → H.265 (`.mp4`) using a small C++ tool linked
    against the Blackmagic RAW SDK, piping decoded RGBA frames into ffmpeg's
-   `hevc_videotoolbox` encoder.
+   `hevc_videotoolbox` encoder. The clip's **start timecode** is read from
+   the BRAW SDK and passed to ffmpeg via `-timecode`, so the resulting MP4
+   carries a SMPTE timecode (`tmcd`) track preserving editorial sync.
 3. **Upload** the `.mp4` to the research drive at:
    ```
    <SIGNCOLLECT_ROOT>/AIHR-FGW-TEST-SIGNLAB (Projectfolder)/blackmagic_files/<YYYY-MM-DD>/<name>.mp4
@@ -247,9 +249,11 @@ and `RCLONE_REMOTE=signcollect:`.
 .
 ├── README.md
 ├── pyproject.toml
-├── src/braw2hevc.cpp           # BRAW → HEVC C++ transcoder
+├── src/
+│   ├── braw2hevc.cpp           # BRAW → HEVC transcoder (preserves SMPTE TC)
+│   └── braw_probe.cpp          # CLI: print clip dims / fps / timecode
 ├── scripts/
-│   ├── build_braw2hevc.sh      # Compiles src/ -> build/braw2hevc
+│   ├── build_braw2hevc.sh      # Compiles src/ -> build/braw2hevc + braw_probe
 │   ├── sync_clips.py           # The sync daemon entrypoint
 │   └── sync_clips_test.py      # pytest unit tests
 └── build/                      # Compiled artefacts (gitignored)
