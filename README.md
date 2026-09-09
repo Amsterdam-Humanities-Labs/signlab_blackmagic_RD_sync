@@ -1,8 +1,36 @@
-# blackmagic_RD_sync
+# signlab_blackmagic_RD_sync
 
 Periodic, autonomous sync of Blackmagic camera clips from the camera's USB
 disk → H.265 (`.mp4`) on the SignCollect research drive, with safe
 camera-side cleanup.
+
+## Where it runs
+
+**On the machine that hosts the `bmcam` server, next to the camera — not on the
+web server.** It talks to `bmcam` at `http://localhost:8000` by default, writes
+into a *mounted* research drive (`SIGNCOLLECT_ROOT`), and needs the Blackmagic
+RAW SDK installed locally to transcode.
+
+**TODO: confirm which machine.** The evidence is split:
+
+- The transcoder is built by a macOS-only shell script (`clang++`, SDK at
+  `/Applications/Blackmagic RAW/...`) and prefers `hevc_videotoolbox`; the
+  README's mount instructions lead with macOS — which points at the **Mac mini**.
+- But the committed default staging directory is `E:\BlackmagicTemp`
+  (`pyproject.toml`, `[tool.bmcam-sync]`) and the code falls back to
+  `braw2hevc.exe` on `os.name == "nt"` — a **Windows** host with an `E:` drive,
+  which in this estate is the Vicon PC.
+
+Both platforms are supported by the code (`libx265` on Windows,
+`hevc_videotoolbox` on macOS), so this may be two deployments. Do not assume
+one without checking the box the clips actually flow through.
+
+## Status
+
+**Experimental.** The pipeline is unit-tested and resume-safe, but it is started
+by hand (`--once` or as a foreground daemon); there is no service unit in the
+repo, and **`signlab_pythonCron`, the estate scheduler, has no job for it** —
+the 12-hour cadence comes from the script's own loop, not from cron.
 
 ## What it does
 
@@ -70,7 +98,7 @@ Date-folder rules (in order):
   `hevc_videotoolbox` on macOS, `libx265` elsewhere).
 - `rclone` ≥ 1.60 on `PATH` if you're mounting the research drive via
   rclone (recommended).
-- A running [bmcam](https://github.com/rem0g/blackmagic_API) server
+- A running **bmcam** server (`signlab_blackmagic_control`, `bmcam serve`)
   exposing `/api/health`, `/api/mounts`, `/api/mounts/{path}` (GET),
   `/api/mounts/{path}` (DELETE), and `/api/download/{path}`.
 - The **Blackmagic RAW SDK** installed at
@@ -81,11 +109,31 @@ Date-folder rules (in order):
 
 ---
 
+## Configuration
+
+Nothing secret is committed. Everything is passed as a flag or an environment
+variable (full table under [Useful flags](#useful-flags)); the two that must
+come from outside the repo are:
+
+- **`SIGNCOLLECT_ROOT`** — where the research drive is mounted on this machine.
+  Required; the run aborts if the path does not exist.
+- **The rclone remote** — created once with `rclone config` and stored in the
+  user's own `rclone.conf` (`~/.config/rclone/rclone.conf`), never in git. Pass
+  its name as `RCLONE_REMOTE` so the upstream-durability check can run before a
+  clip is deleted from the camera.
+
+`BMCAM_API_KEY` is only needed if the bmcam server was started with one.
+`[tool.bmcam-sync].staging-dir` in `pyproject.toml` is the committed default for
+the local cache and is machine-specific — override it with `--staging-dir` or
+`STAGING_DIR` rather than editing it.
+
+---
+
 ## Install
 
 ```bash
-git clone https://github.com/rem0g/blackmagic_RD_sync.git
-cd blackmagic_RD_sync
+git clone git@github.com:Amsterdam-Humanities-Labs/signlab_blackmagic_RD_sync.git
+cd signlab_blackmagic_RD_sync
 
 # Python deps
 python3.12 -m venv .venv
