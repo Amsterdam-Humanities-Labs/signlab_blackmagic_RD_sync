@@ -11,19 +11,17 @@ web server.** It talks to `bmcam` at `http://localhost:8000` by default, writes
 into a *mounted* research drive (`SIGNCOLLECT_ROOT`), and needs the Blackmagic
 RAW SDK installed locally to transcode.
 
-**TODO: confirm which machine.** The evidence is split:
+**The Vicon PC, in the Visualisation Lab** (confirmed 2026-09-09, signlab_signcollect-stack#28).
 
-- The transcoder is built by a macOS-only shell script (`clang++`, SDK at
-  `/Applications/Blackmagic RAW/...`) and prefers `hevc_videotoolbox`; the
-  README's mount instructions lead with macOS — which points at the **Mac mini**.
-- But the committed default staging directory is `E:\BlackmagicTemp`
-  (`pyproject.toml`, `[tool.bmcam-sync]`) and the code falls back to
-  `braw2hevc.exe` on `os.name == "nt"` — a **Windows** host with an `E:` drive,
-  which in this estate is the Vicon PC.
+This is the `E:\BlackmagicTemp` / `os.name == "nt"` path in the code: staging on
+an `E:` drive, transcoding via `braw2hevc.exe` with `libx265`.
 
-Both platforms are supported by the code (`libx265` on Windows,
-`hevc_videotoolbox` on macOS), so this may be two deployments. Do not assume
-one without checking the box the clips actually flow through.
+The macOS half is real code but not the deployment. The build script
+(`clang++`, Blackmagic RAW SDK under `/Applications/`) and the
+`hevc_videotoolbox` encoder exist and work, and the mount instructions still
+lead with macOS — but the clips flow through the Vicon PC. Treat the macOS
+branches as supported-but-unused unless you find a second deployment, and note
+that `bmcam serve` on `localhost:8000` therefore also runs there.
 
 ## Status
 
