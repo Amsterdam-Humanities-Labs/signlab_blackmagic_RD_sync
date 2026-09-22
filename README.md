@@ -1,354 +1,42 @@
 # signlab_blackmagic_RD_sync
-
-Periodic, autonomous sync of Blackmagic camera clips from the camera's USB
-disk → H.265 (`.mp4`) on the SignCollect research drive, with safe
-camera-side cleanup.
-
-## Where it runs
-
-**On the machine that hosts the `bmcam` server, next to the camera — not on the
-web server.** It talks to `bmcam` at `http://localhost:8000` by default, writes
-into a *mounted* research drive (`SIGNCOLLECT_ROOT`), and needs the Blackmagic
-RAW SDK installed locally to transcode.
-
-**The Vicon PC, in the Visualisation Lab** (confirmed 2026-09-09, signlab_signcollect-stack#28).
-
-This is the `E:\BlackmagicTemp` / `os.name == "nt"` path in the code: staging on
-an `E:` drive, transcoding via `braw2hevc.exe` with `libx265`.
-
-The macOS half is real code but not the deployment. The build script
-(`clang++`, Blackmagic RAW SDK under `/Applications/`) and the
-`hevc_videotoolbox` encoder exist and work, and the mount instructions still
-lead with macOS — but the clips flow through the Vicon PC. Treat the macOS
-branches as supported-but-unused unless you find a second deployment, and note
-that `bmcam serve` on `localhost:8000` therefore also runs there.
-
-## Status
-
-**Experimental.** The pipeline is unit-tested and resume-safe, but it is started
-by hand (`--once` or as a foreground daemon); there is no service unit in the
-repo, and **`signlab_pythonCron`, the estate scheduler, has no job for it** —
-the 12-hour cadence comes from the script's own loop, not from cron.
+Moves Blackmagic camera clips (`.braw`) to the SignCollect research drive as H.265 `.mp4`, then deletes them from the camera.
 
 ## What it does
+Each cycle, per `.braw` on the camera's USB disk (via `bmcam serve`):
+1. Download to staging, transcode with `braw2hevc` (Blackmagic RAW SDK -> ffmpeg; keeps the SMPTE start timecode). If the SDK cannot decode a clip, the original `.braw` is archived instead.
+2. Upload to `<SIGNCOLLECT_ROOT>/AIHR-FGW-TEST-SIGNLAB (Projectfolder)/blackmagic_files/<YYYY-MM-DD>/<name>.mp4`. Date comes from `_YYMMDD_` in the name, else `<reel>_<MMDDHHMM>_C<NNN>` + mtime year, else mtime.
+3. Verify size + ffprobe and, with `RCLONE_REMOTE`, upstream durability (`rclone size`). Then `DELETE /api/mounts/usb/<volume>/<file>` on the camera.
+Idempotent: finished steps are skipped on the next run. Without `RCLONE_REMOTE` on an rclone mount it can delete from the camera before the upload reaches the backend.
 
-For every `.braw` clip on the camera's USB disk, on each cycle:
+## Where it runs
+- The Vicon PC (Windows) in the Visualisation Lab, next to `bmcam serve` on `localhost:8000`. Staging on `E:\BlackmagicTemp` (the `pyproject.toml` default), `braw2hevc.exe` with `libx265`.
+- The macOS code (`build_braw2hevc.sh` with `clang++`, `hevc_videotoolbox`) works but is not deployed.
 
-1. **Download** the clip through the bmcam server (`/api/download/...`) into
-   a local staging directory.
-2. **Transcode** `.braw` → H.265 (`.mp4`) using a small C++ tool linked
-   against the Blackmagic RAW SDK, piping decoded RGBA frames into ffmpeg's
-   `hevc_videotoolbox` encoder. The clip's **start timecode** is read from
-   the BRAW SDK and passed to ffmpeg via `-timecode`, so the resulting MP4
-   carries a SMPTE timecode (`tmcd`) track preserving editorial sync.
-3. **Upload** the `.mp4` to the research drive at:
-   ```
-   <SIGNCOLLECT_ROOT>/AIHR-FGW-TEST-SIGNLAB (Projectfolder)/blackmagic_files/<YYYY-MM-DD>/<name>.mp4
-   ```
-4. **Verify** the destination: size matches local + ffprobe parses + (if
-   the destination is an rclone mount) the file is **durable upstream**, not
-   just sitting in the VFS write-back cache.
-5. **Delete** the source `.braw` from the camera via
-   `DELETE /api/mounts/{path}`.
-6. **Drop** the local `.braw` to save disk; keep the local `.mp4` cache so
-   the next cycle can short-circuit on resume.
+## Status
+Experimental. Started by hand (`--once` or foreground daemon, 12 h loop); no service unit, no pythonCron job, no heartbeat.
 
-If the BRAW SDK can't decode a clip (corrupted/truncated recordings near
-the end-of-stream are not unusual), the script falls back to **archiving
-the original `.braw`** to the same destination folder, with the same
-size+upstream verification before camera deletion.
-
-The pipeline is idempotent and resume-aware: any step that already
-completed (cached `.mp4`, `.mp4` already on destination, `.braw` already
-archived) is skipped on the next run.
-
----
-
-## Filesystem layout
-
+## How to run / deploy
+```bash
+python3.12 -m venv .venv && .venv/bin/pip install -e '.[test]'
+./scripts/build_braw2hevc.sh                      # macOS; needs the BRAW SDK in /Applications
+.venv/bin/pytest -q                               # unit only, no camera / drive / SDK
+SIGNCOLLECT_ROOT=S:\ RCLONE_REMOTE=signcollect: .venv/bin/python -m scripts.sync_clips --once [--dry-run]
+SIGNCOLLECT_ROOT=S:\ RCLONE_REMOTE=signcollect: .venv/bin/python -m scripts.sync_clips   # daemon
 ```
-<SIGNCOLLECT_ROOT>/AIHR-FGW-TEST-SIGNLAB (Projectfolder)/blackmagic_files/
-├── 2026-05-06/
-│   ├── 1003_05060924_C001.mp4
-│   ├── 1003_05060924_C002.mp4
-│   └── ...
-└── 2026-05-07/
-    └── ...
-```
-
-Date-folder rules (in order):
-
-1. Names matching `<anything>_YYMMDD_<takeIndex>.<ext>`
-   (e.g. `testVoorGomer_260506_1.braw`, `M20250923_4544_260210_0.braw`):
-   YYMMDD comes from the filename.
-2. Legacy auto-names `<reel>_<MMDDHHMM>_C<NNN>.braw`
-   (e.g. `1003_05061251_C011.braw`): MMDD from filename, year from the API
-   mtime header.
-3. Anything else: the full `YYYY-MM-DD` is taken from the API mtime.
-
----
-
-## Requirements
-
-- macOS or Linux (tested on macOS arm64).
-- Python ≥ 3.10 with `requests`.
-- `ffmpeg` and `ffprobe` on `PATH` (HEVC encoders required:
-  `hevc_videotoolbox` on macOS, `libx265` elsewhere).
-- `rclone` ≥ 1.60 on `PATH` if you're mounting the research drive via
-  rclone (recommended).
-- A running **bmcam** server (`signlab_blackmagic_control`, `bmcam serve`)
-  exposing `/api/health`, `/api/mounts`, `/api/mounts/{path}` (GET),
-  `/api/mounts/{path}` (DELETE), and `/api/download/{path}`.
-- The **Blackmagic RAW SDK** installed at
-  `/Applications/Blackmagic RAW/Blackmagic RAW SDK` (macOS default).
-  Download from
-  [blackmagicdesign.com](https://www.blackmagicdesign.com/support/family/blackmagic-raw)
-  if missing.
-
----
+SIGTERM/SIGINT stop after the current clip. `--help` lists every flag. Research drive on Windows: WinFsp + `rclone mount signcollect: S: --vfs-cache-mode=full --vfs-cache-max-size=10G`, started by a logon scheduled task (`--daemon` does not work on Windows).
 
 ## Configuration
-
-Nothing secret is committed. Everything is passed as a flag or an environment
-variable (full table under [Useful flags](#useful-flags)); the two that must
-come from outside the repo are:
-
-- **`SIGNCOLLECT_ROOT`** — where the research drive is mounted on this machine.
-  Required; the run aborts if the path does not exist.
-- **The rclone remote** — created once with `rclone config` and stored in the
-  user's own `rclone.conf` (`~/.config/rclone/rclone.conf`), never in git. Pass
-  its name as `RCLONE_REMOTE` so the upstream-durability check can run before a
-  clip is deleted from the camera.
-
-`BMCAM_API_KEY` is only needed if the bmcam server was started with one.
-`[tool.bmcam-sync].staging-dir` in `pyproject.toml` is the committed default for
-the local cache and is machine-specific — override it with `--staging-dir` or
-`STAGING_DIR` rather than editing it.
-
----
-
-## Install
-
-```bash
-git clone git@github.com:Amsterdam-Humanities-Labs/signlab_blackmagic_RD_sync.git
-cd signlab_blackmagic_RD_sync
-
-# Python deps
-python3.12 -m venv .venv
-.venv/bin/pip install -e '.[test]'
-
-# Build the BRAW transcoder (links against the BRAW SDK at runtime)
-./scripts/build_braw2hevc.sh
-```
-
-Verify by running the unit tests:
-
-```bash
-.venv/bin/pytest -q
-```
-
----
-
-## Usage
-
-### One-shot cycle
-
-```bash
-SIGNCOLLECT_ROOT=/Users/<you>/signcollect \
-RCLONE_REMOTE=signcollect: \
-.venv/bin/python -m scripts.sync_clips --once
-```
-
-### Dry-run (no downloads, no transcode, no uploads, no deletes)
-
-```bash
-SIGNCOLLECT_ROOT=/Users/<you>/signcollect \
-.venv/bin/python -m scripts.sync_clips --once --dry-run
-```
-
-### Continuous daemon (12-hour interval, default)
-
-```bash
-SIGNCOLLECT_ROOT=/Users/<you>/signcollect \
-RCLONE_REMOTE=signcollect: \
-.venv/bin/python -m scripts.sync_clips
-```
-
-`SIGTERM`/`SIGINT` exits cleanly after the current clip.
-
-### Useful flags
-
-| Flag / env var | Default | Purpose |
+| Flag / env | Default | Purpose |
 |---|---|---|
-| `--bmcam-url` / `BMCAM_URL` | `http://localhost:8000` | bmcam server base URL. |
-| `--api-key` / `BMCAM_API_KEY` | unset | Sent as `X-API-Key` header if set. |
-| `--signcollect-root` / `SIGNCOLLECT_ROOT` | required | Mount root of the research drive. |
-| `--staging-dir` / `STAGING_DIR` / `[tool.bmcam-sync].staging-dir` | `~/bmcam_sync_staging` | Local cache. |
-| `--rclone-remote` / `RCLONE_REMOTE` | unset | rclone remote prefix matching `SIGNCOLLECT_ROOT` (e.g. `signcollect:`). When set, the script checks upstream durability via `rclone size` before deleting from the camera. |
-| `--bitrate` / `TRANSCODE_BITRATE` | `50M` | HEVC target bitrate. |
-| `--interval-seconds` / `SYNC_INTERVAL_SECONDS` | `43200` (12 h) | Loop interval in daemon mode. |
-| `--no-delete-source` / `NO_DELETE_SOURCE=1` | off | Skip the camera-side `DELETE` for safety while testing. |
-| `--once` | — | Run a single cycle and exit. |
-| `--dry-run` / `SYNC_DRY_RUN=1` | off | Plan a cycle without doing any work. |
-| `--verbose` | off | Bump stdout to DEBUG. |
-| `--log-file` / `SYNC_LOG_FILE` | `~/bmcam_sync.log` | Rotating log path (10 MB × 5). |
-| `--transcoder` / `BRAW_TRANSCODER` | `./build/braw2hevc` | Override the transcoder binary path. |
+| `SIGNCOLLECT_ROOT` | required | research drive mount; run aborts if missing |
+| `RCLONE_REMOTE` | unset | remote (in the user's `rclone.conf`, not in git) for the durability check |
+| `BMCAM_URL`, `BMCAM_API_KEY` | `http://localhost:8000`, unset | bmcam server |
+| `STAGING_DIR` | `[tool.bmcam-sync].staging-dir` in `pyproject.toml` | local cache; machine-specific, override rather than edit |
+| `TRANSCODE_BITRATE`, `SYNC_INTERVAL_SECONDS` | `50M`, `43200` | encoding, loop |
+| `NO_DELETE_SOURCE=1`, `SYNC_DRY_RUN=1`, `SYNC_LOG_FILE`, `BRAW_TRANSCODER` | off, off, `~/bmcam_sync.log`, `./build/braw2hevc[.exe]` | safety, log (10 MB x 5), binary |
 
-### What the camera-side delete actually does
-
-Once the upstream durability check passes (`rclone size` reports the file
-on the backend at the expected size), the script issues:
-
-```
-DELETE /api/mounts/usb/<volume>/<filename>
-```
-
-Without `--rclone-remote`, the durability check is skipped — only the
-local mount-side size+ffprobe checks are applied. Don't run with
-`delete_source=True` and no `RCLONE_REMOTE` against an rclone mount, or
-you risk deleting from the camera before the upload reaches the
-backend.
-
----
-
-## Mounting the SignCollect research drive
-
-### macOS (rclone mount)
-
-Install rclone (Homebrew):
-```bash
-brew install rclone macfuse
-```
-
-Configure the remote (one-time):
-```bash
-rclone config
-# n) New remote
-# name> signcollect
-# type> webdav    (or whichever backend SignCollect provides)
-# follow the prompts
-```
-
-Mount in the background:
-```bash
-mkdir -p ~/signcollect
-rclone mount signcollect: ~/signcollect \
-  --daemon \
-  --vfs-cache-mode=full \
-  --vfs-cache-max-size=10GiB \
-  --vfs-refresh
-```
-
-The `--vfs-cache-mode=full` flag accelerates reads and lets `rsync` write
-quickly into a local cache, which rclone then uploads to the backend
-asynchronously. Because of this asynchrony, this script uses
-`rclone size <remote>:<path>` to confirm the upload reached the backend
-before deleting the source from the camera (see `RCLONE_REMOTE` above).
-
-Unmount:
-```bash
-umount ~/signcollect
-```
-
-If `umount` says "Resource busy", quit any app that has a file open under
-`~/signcollect`, or use `diskutil unmount force ~/signcollect`.
-
-### Windows (rclone mount)
-
-Install [WinFsp](https://winfsp.dev/) and rclone (`choco install rclone`
-or download from [rclone.org](https://rclone.org/downloads/)).
-
-Configure the remote (one-time):
-```powershell
-rclone config
-# Same prompts as macOS
-```
-
-Mount as a drive letter (PowerShell as Administrator):
-```powershell
-rclone mount signcollect: S: --vfs-cache-mode=full --vfs-cache-max-size=10G
-```
-
-Or in the background using `--daemon` is **not** supported on Windows; use
-`nssm install` or a scheduled task instead. A simple scheduled-task
-recipe:
-
-1. Save the mount command to `C:\rclone\mount-signcollect.bat`:
-   ```bat
-   "C:\Program Files\rclone\rclone.exe" mount signcollect: S: ^
-     --vfs-cache-mode=full --vfs-cache-max-size=10G ^
-     --log-file C:\rclone\rclone.log
-   ```
-2. Open Task Scheduler → Create Task → trigger "At log on" → action: run
-   that batch file.
-3. Set "Run only when user is logged on" so the drive letter is visible in
-   Explorer.
-
-When pointing this script at the Windows mount, `SIGNCOLLECT_ROOT=S:\`
-and `RCLONE_REMOTE=signcollect:`.
-
----
-
-## Layout
-
-```
-.
-├── README.md
-├── pyproject.toml
-├── src/
-│   ├── braw2hevc.cpp           # BRAW → HEVC transcoder (preserves SMPTE TC)
-│   └── braw_probe.cpp          # CLI: print clip dims / fps / timecode
-├── scripts/
-│   ├── build_braw2hevc.sh      # Compiles src/ -> build/braw2hevc + braw_probe
-│   ├── sync_clips.py           # The sync daemon entrypoint
-│   └── sync_clips_test.py      # pytest unit tests
-└── build/                      # Compiled artefacts (gitignored)
-```
-
----
-
-## Troubleshooting
-
-**`bmcam server unreachable at startup`** — start the bmcam server
-(`bmcam serve`) on the host that's connected to the camera. Confirm it's
-reachable: `curl http://localhost:8000/api/health`.
-
-**`SIGNCOLLECT_ROOT … does not exist`** — the research drive isn't
-mounted, or the path is wrong. Mount it (see above), confirm with
-`ls "$SIGNCOLLECT_ROOT"`, then retry.
-
-**`transcoder ... missing or not executable`** — run
-`./scripts/build_braw2hevc.sh`. If it can't find the SDK, install the
-Blackmagic RAW SDK at the canonical macOS path.
-
-**`failed to load BRAW SDK framework`** — the SDK is installed but in a
-non-standard path. Edit `src/braw2hevc.cpp` (constant `cfFrameworkPath`)
-or symlink the framework directory.
-
-**`frame N process failed (hr=0x8000ffff)`** — the BRAW SDK refused a
-frame, almost always near end-of-clip. Cause: an interrupted recording
-(USB pulled, power cut, force-stop). The script falls back to archiving
-the original `.braw` so the source is preserved.
-
-**`verify_upstream: ... not durable after Ns`** — the file made it into
-the rclone VFS write-back cache but hasn't reached the backend within the
-size-aware deadline. Check rclone logs (`--log-file` on the mount), the
-backend's quota / health, and your network throughput. The clip stays on
-the camera and the sync retries on the next cycle.
-
----
-
-## Tests
-
-```bash
-.venv/bin/pytest -q
-```
-
-The suite is unit-only (no real camera, no real network drive, no real
-BRAW SDK). End-to-end testing against the live camera is documented in
-the spec checklist:
-
-- `--dry-run --once` against the live camera prints the planned actions.
-- `--once` against a tmpdir `SIGNCOLLECT_ROOT` produces correct
-  `<YYYY-MM-DD>/<name>.mp4` layout.
-- A second `--once` is a no-op (resume-short-circuit hits).
+## Dependencies
+- `signlab_blackmagic_control` (`bmcam serve`): `/api/health`, `/api/mounts[/{path}]` GET/DELETE, `/api/download/{path}`.
+- Blackmagic RAW SDK, `ffmpeg`/`ffprobe` with an HEVC encoder, `rclone` >= 1.60, Python >= 3.10 + `requests`.
+- Design spec: `docs/specs/2026-05-06-sync-videos-to-research-drive.md` in `signlab_blackmagic_control`.
+- Stack overview: https://github.com/Amsterdam-Humanities-Labs/signlab_signcollect-stack
