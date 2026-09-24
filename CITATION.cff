@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "signlab_blackmagic_RD_sync: Application to transcode and copy blackmagic video files to research drive mount"
+authors:
+  - given-names: Gomer
+    family-names: Otterspeer
+    affiliation: University of Amsterdam
+  - given-names: Berit
+    family-names: Janssen
+  - given-names: Stijn
+    name-particle: van
+    family-names: Hannen
+license: Apache-2.0
+repository-code: "https://github.com/Amsterdam-Humanities-Labs/signlab_blackmagic_RD_sync"
+doi: "10.21942/uva.33980302"
+keywords:
+  - "sign language"
+  - "NGT"
+  - "SignCollect"

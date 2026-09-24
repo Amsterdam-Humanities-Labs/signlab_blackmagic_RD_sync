@@ -42,3 +42,10 @@ Research drive on Windows: WinFsp plus `rclone mount signcollect: S: --vfs-cache
 - Blackmagic RAW SDK, `ffmpeg`/`ffprobe` with an HEVC encoder, `rclone` >= 1.60, `rsync` (macOS/Linux), Python >= 3.10 with `requests`.
 - Design spec: `docs/specs/2026-05-06-sync-videos-to-research-drive.md` in signlab_blackmagic_control.
 - Stack overview: [signlab_signcollect-stack](https://github.com/Amsterdam-Humanities-Labs/signlab_signcollect-stack).
+
+## License and citation
+
+Apache License 2.0, copyright University of Amsterdam: see [LICENSE](LICENSE) and
+[NOTICE](NOTICE). You may use it, also commercially, as long as you credit
+Gomer Otterspeer / University of Amsterdam as the source. To cite it, use
+[CITATION.cff](CITATION.cff) (the *Cite this repository* button on GitHub) or the DOI [10.21942/uva.33980302](https://doi.org/10.21942/uva.33980302).
